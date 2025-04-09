@@ -9,8 +9,9 @@ from flask_cors import CORS
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-import kagglehub
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -18,323 +19,310 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-DATA_DIR = 'data'
-MODEL_FEATURES = ['sleep_duration', 'exercise_freq']
+# Define features the model will now use
+# Note: Gender will be encoded, so we use 'Gender_encoded'
+MODEL_FEATURES = ['sleep_duration', 'exercise_freq', 'Age', 'Gender_encoded', 'Stress Level']
 TARGET_VARIABLE = 'risk_label'
 
-# --- Data Loading and Preprocessing ---
-def ensure_dir_exists(directory):
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-        logging.info(f"Created directory: {directory}")
+# Global variables to store model, data summary, and accuracy
+df_summary_global = None # Store processed data for summary/correlation
+pipeline_global = None # Store the trained pipeline (includes scaling + model)
+model_accuracy_global = None # Store accuracy
+feature_names_global = None # Store feature names used by the final model
 
-def extract_zip(zip_path, extract_dir):
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as z:
-            z.extractall(extract_dir)
-            logging.info(f"Extracted {zip_path} to {extract_dir}")
-    except zipfile.BadZipFile:
-        logging.error(f"Error: {zip_path} is not a valid zip file or is corrupted.")
-        return False
-    except Exception as e:
-        logging.error(f"Error extracting zip file {zip_path}: {e}")
-        return False
-    return True
-
-def download_and_extract_dataset(dataset_slug, zip_filename, extract_subfolder):
-    ensure_dir_exists(DATA_DIR)
-    zip_path = os.path.join(DATA_DIR, zip_filename)
-    extract_dir = os.path.join(DATA_DIR, extract_subfolder)
-
-    if not os.path.exists(extract_dir) or not os.listdir(extract_dir):
-        logging.info(f"Downloading dataset: {dataset_slug}")
-        try:
-            zip_path = kagglehub.dataset_download(dataset_slug, path=DATA_DIR)
-            logging.info(f"Downloaded {dataset_slug} to {zip_path}")
-            ensure_dir_exists(extract_dir)
-            if not extract_zip(zip_path, extract_dir):
-                 # If extraction fails, remove the potentially corrupted dir
-                 if os.path.exists(extract_dir):
-                     os.rmdir(extract_dir) # Use shutil.rmtree if dir might not be empty
-                 return None
-        except Exception as e:
-            logging.error(f"Failed to download or extract {dataset_slug}: {e}")
-            return None
-    else:
-        logging.info(f"Dataset {dataset_slug} already exists in {extract_dir}")
-
-    csv_files = glob.glob(os.path.join(extract_dir, "*.csv"))
-    if not csv_files:
-        logging.warning(f"No CSV files found in {extract_dir}")
-        return pd.DataFrame()
-
-    try:
-        df = pd.read_csv(csv_files[0])
-        logging.info(f"Loaded data from {csv_files[0]}")
-        return df
-    except Exception as e:
-        logging.error(f"Error reading CSV {csv_files[0]}: {e}")
-        return pd.DataFrame()
-
+# --- Helper Functions (keep generate_risk_label, classify_risk_label) ---
 def generate_risk_label(sleep_duration):
-    if pd.isna(sleep_duration):
-        return 1 # Default to moderate if missing
-    if sleep_duration < 6:
-        return 2  # High risk
-    elif sleep_duration <= 8:
-        return 1  # Moderate risk
-    else:
-        return 0  # Low risk
+    # 0: Low (>= 8 hrs), 1: Moderate (6-8 hrs), 2: High (< 6 hrs)
+    if pd.isna(sleep_duration): return 1 # Moderate if unknown
+    if sleep_duration < 6: return 2      # High
+    elif sleep_duration < 8: return 1   # Moderate (Changed from <= 8)
+    else: return 0                      # Low
 
-def load_and_prepare_data():
-    logging.info("Loading and preparing data from local file data2.csv...")
-    
-    data_dir = 'data' 
-    file2_path = os.path.join(data_dir, 'data2.csv')
-    
-    # --- Load only data2.csv --- 
-    try:
-        df_merged = pd.read_csv(file2_path) # Load directly into df_merged
-        logging.info(f"Loaded data from local file: {file2_path}. Shape: {df_merged.shape}")
-    except FileNotFoundError:
-        logging.error(f"File not found: {file2_path}. Please ensure data2.csv is in the 'data' folder.")
-        return pd.DataFrame(), None
-    except Exception as e:
-        logging.error(f"Error reading local CSV {file2_path}: {e}")
-        return pd.DataFrame(), None
-
-    # --- Skip loading df1 and merging --- 
-
-    # --- Feature Engineering & Handling Missing Values --- 
-    # Rename columns from data2.csv for consistency
-    df_merged.rename(columns={
-        'Sleep Duration': 'sleep_duration',
-        'Physical Activity Level': 'exercise_freq',
-        # Add other renames if needed, e.g., 'Quality of Sleep', 'Stress Level'
-    }, inplace=True)
-    logging.info("Renamed columns.")
-
-    # Ensure required MODEL_FEATURES exist after renaming
-    if 'sleep_duration' not in df_merged.columns:
-        logging.error("Column 'sleep_duration' (from 'Sleep Duration') not found after rename. Cannot proceed.")
-        return pd.DataFrame(), None
-    if 'exercise_freq' not in df_merged.columns:
-        logging.error("Column 'exercise_freq' (from 'Physical Activity Level') not found after rename. Imputing randomly.")
-        # If critical, return None. If imputation is acceptable:
-        df_merged['exercise_freq'] = np.random.randint(0, 7, size=len(df_merged))
-    
-    # Impute missing values for the model features
-    # Sleep Duration
-    df_merged['sleep_duration'] = pd.to_numeric(df_merged['sleep_duration'], errors='coerce')
-    mean_sleep = df_merged['sleep_duration'].mean()
-    df_merged['sleep_duration'].fillna(mean_sleep, inplace=True)
-    logging.info(f"Processed 'sleep_duration'. Missing values filled with mean: {mean_sleep:.2f}")
-
-    # Exercise Frequency
-    df_merged['exercise_freq'] = pd.to_numeric(df_merged['exercise_freq'], errors='coerce')
-    median_exercise = df_merged['exercise_freq'].median()
-    df_merged['exercise_freq'].fillna(median_exercise, inplace=True)
-    logging.info(f"Processed 'exercise_freq'. Missing values filled with median: {median_exercise}")
-
-    # Process other potentially useful numeric columns (for correlation/summary)
-    potential_numeric_cols = ['Age', 'Heart Rate', 'Daily Steps', 'Stress Level', 'Quality of Sleep']
-    for col in potential_numeric_cols:
-        if col in df_merged.columns:
-            df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce')
-            # Optional: Impute NaNs if needed for correlation/summary
-            # df_merged[col].fillna(df_merged[col].median(), inplace=True)
-        else:
-            logging.warning(f"Optional numeric column '{col}' not found.")
-
-    # Encode categorical features 
-    categorical_cols = ['Gender', 'Occupation', 'BMI Category', 'Sleep Disorder']
-    label_encoders = {}
-    for col in categorical_cols:
-        if col in df_merged.columns:
-            df_merged[col] = df_merged[col].astype(str).fillna('Unknown') 
-            le = LabelEncoder()
-            df_merged[col + '_encoded'] = le.fit_transform(df_merged[col])
-            label_encoders[col] = le 
-            logging.info(f"Label encoded column: {col}")
-        else:
-            logging.warning(f"Optional categorical column '{col}' not found for encoding.")
-
-    # Drop rows where key model features are still missing after imputation (shouldn't happen with current logic)
-    df_merged.dropna(subset=MODEL_FEATURES, inplace=True)
-
-    if df_merged.empty:
-        logging.error("Dataframe is empty after cleaning. Cannot train model.")
-        return pd.DataFrame(), None
-
-    # Generate the target variable using the processed 'sleep_duration'
-    df_merged[TARGET_VARIABLE] = df_merged['sleep_duration'].apply(generate_risk_label)
-    logging.info("Generated risk labels.")
-
-    # --- Model Training --- 
-    try:
-        X = df_merged[MODEL_FEATURES]
-        y = df_merged[TARGET_VARIABLE]
-
-        model = LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=300, random_state=42)
-        model.fit(X, y)
-        logging.info("Logistic Regression model trained successfully.")
-
-        return df_merged, model
-    except Exception as e:
-        logging.error(f"Error during model training: {e}", exc_info=True)
-        return df_merged, None # Return data but no model
-
-# --- Load data and train model on startup ---
-df_global, model_global = load_and_prepare_data()
-
-# --- Helper Function ---
 def classify_risk_label(label: int) -> str:
     mapping = {0: "Low", 1: "Moderate", 2: "High"}
     return mapping.get(label, "Unknown")
 
+# --- Data Loading and Preprocessing ---
+def load_and_prepare_data():
+    global feature_names_global # To store final feature names
+    logging.info("Loading and preparing data from local file data/data2.csv...")
+
+    data_dir = 'data'
+    file_path = os.path.join(data_dir, 'data2.csv')
+
+    # Ensure data directory exists (moved check here)
+    if not os.path.exists(data_dir):
+        logging.error(f"Data directory '{data_dir}' not found. Please create it.")
+        return None, None, None 
+    # Ensure file exists
+    if not os.path.isfile(file_path):
+        logging.error(f"File not found: {file_path}. Please ensure data2.csv is in the '{data_dir}' folder.")
+        return None, None, None 
+
+    try:
+        df = pd.read_csv(file_path)
+        logging.info(f"Loaded data from local file: {file_path}. Shape: {df.shape}")
+    except Exception as e:
+        logging.error(f"Error reading local CSV {file_path}: {e}")
+        return None, None, None
+
+    # --- Feature Engineering & Handling Missing Values ---
+    df.rename(columns={
+        'Sleep Duration': 'sleep_duration',
+        'Physical Activity Level': 'exercise_freq',
+        # Keep original 'Age', 'Gender', 'Stress Level'
+    }, inplace=True)
+    logging.info("Renamed columns.")
+
+    # Convert key columns to numeric, coercing errors
+    numeric_cols_to_process = ['sleep_duration', 'exercise_freq', 'Age', 'Stress Level', 'Heart Rate', 'Daily Steps', 'Quality of Sleep']
+    for col in numeric_cols_to_process:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        else:
+            logging.warning(f"Column '{col}' not found. It might be needed later.")
+
+    # Impute missing numeric values (using median for robustness)
+    cols_to_impute = ['sleep_duration', 'exercise_freq', 'Age', 'Stress Level']
+    for col in cols_to_impute:
+        if col in df.columns:
+            median_val = df[col].median()
+            df[col].fillna(median_val, inplace=True)
+            logging.info(f"Imputed missing values in '{col}' with median: {median_val}")
+        else:
+            # Handle critical missing columns needed for model
+             if col in ['sleep_duration', 'exercise_freq', 'Age', 'Stress Level']:
+                 logging.error(f"Critical model feature column '{col}' is missing after rename. Cannot proceed.")
+                 return None, None, None
+
+    # Encode Gender
+    if 'Gender' in df.columns:
+        le = LabelEncoder()
+        df['Gender_encoded'] = le.fit_transform(df['Gender'].astype(str).fillna('Unknown'))
+        logging.info("Label encoded column: Gender")
+        # Store mapping if needed: gender_map = dict(zip(le.classes_, le.transform(le.classes_)))
+    else:
+        logging.error("Column 'Gender' is missing. Cannot create 'Gender_encoded' feature.")
+        return None, None, None
+
+    # Define columns for preprocessing pipeline
+    numeric_features = ['sleep_duration', 'exercise_freq', 'Age', 'Stress Level']
+    # Categorical features are already handled ('Gender_encoded')
+    
+    # Check if all required MODEL_FEATURES are now present
+    missing_features = [f for f in MODEL_FEATURES if f not in df.columns]
+    if missing_features:
+         logging.error(f"Required model features missing before training: {missing_features}. Cannot train model.")
+         return None, None, None
+
+    # Generate the target variable
+    df[TARGET_VARIABLE] = df['sleep_duration'].apply(generate_risk_label)
+    logging.info("Generated risk labels.")
+
+    # Drop rows where target is somehow NaN (shouldn't happen now)
+    df.dropna(subset=[TARGET_VARIABLE], inplace=True)
+    
+    # --- Model Training with Pipeline and Train/Test Split ---
+    try:
+        X = df[MODEL_FEATURES]
+        y = df[TARGET_VARIABLE]
+
+        # Split data for evaluation
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+        logging.info(f"Data split: Train shape {X_train.shape}, Test shape {X_test.shape}")
+
+        # Create preprocessing pipeline (only scaling numeric features here)
+        # 'passthrough' could be used for 'Gender_encoded' if no scaling needed
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', StandardScaler(), numeric_features) 
+                # Add ('cat', OneHotEncoder(), categorical_features) if using OHE
+            ],
+            remainder='passthrough' # Keep 'Gender_encoded' as is
+        )
+        
+        # Create full pipeline including model
+        pipeline = Pipeline(steps=[('preprocessor', preprocessor),
+                                ('classifier', LogisticRegression(multi_class='ovr', # ovr often works well
+                                                                solver='liblinear', # Good solver for ovr
+                                                                random_state=42,
+                                                                class_weight='balanced')) # Handle imbalanced classes
+                               ])
+
+        # Train the pipeline
+        pipeline.fit(X_train, y_train)
+        logging.info("Preprocessing + Logistic Regression pipeline trained successfully.")
+
+        # Evaluate model accuracy on test set
+        y_pred = pipeline.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        logging.info(f"Pipeline accuracy on test set: {accuracy:.3f}")
+
+        # Get feature names after preprocessing (important for interpretation if needed)
+        # Accessing feature names from ColumnTransformer can be complex, storing original for now
+        feature_names_global = MODEL_FEATURES 
+
+        return df, pipeline, accuracy # Return full df, trained pipeline, and accuracy
+
+    except Exception as e:
+        logging.error(f"Error during model training pipeline: {e}", exc_info=True)
+        return df, None, None # Return data but no pipeline/accuracy
+
+# --- Load data and train model on startup ---
+df_summary_global, pipeline_global, model_accuracy_global = load_and_prepare_data()
+
 # --- API Endpoints ---
+
+# NEW Endpoint for Model Info
+@app.route('/model-info', methods=['GET'])
+def model_info():
+     if model_accuracy_global is None:
+          # Return an error or default info if accuracy wasn't calculated
+          return jsonify({"error": "Model accuracy not available."}), 503
+     else:
+          return jsonify({
+               "accuracy": round(model_accuracy_global, 3),
+               "features_used": feature_names_global,
+               "target": TARGET_VARIABLE,
+               "model_type": "Logistic Regression (in Pipeline)"
+          })
+
 @app.route('/predict', methods=['POST'])
 def predict():
-    if model_global is None:
-        logging.error("Model not available for prediction.")
-        abort(503, description="Model is not trained or loaded.")
+    if pipeline_global is None: # Check pipeline now
+        logging.error("Pipeline not available for prediction.")
+        abort(503, description="Model Pipeline is not trained or loaded.")
 
-    if not request.is_json:
-        abort(400, description="Request must be JSON.")
+    if not request.is_json: abort(400, description="Request must be JSON.")
 
     data = request.get_json()
-    try:
-        sleep_hours = float(data.get('sleepHours', 7.0))
-        exercise_freq = int(data.get('exerciseFreq', 3))
-    except (TypeError, ValueError):
-        abort(400, description="Invalid input types. 'sleepHours' must be float, 'exerciseFreq' must be int.")
-
-    if not (4 <= sleep_hours <= 12 and 0 <= exercise_freq <= 7):
-         logging.warning(f"Input values out of typical range: Sleep={sleep_hours}, Exercise={exercise_freq}")
-         # Allow prediction but log warning
+    is_simulation = 'age' not in data # Heuristic: Assume simulation if 'age' is missing
 
     try:
-        features_input = np.array([[sleep_hours, exercise_freq]])
-        pred_label = model_global.predict(features_input)[0]
-        pred_proba = model_global.predict_proba(features_input)[0]
+        # Extract all expected features, providing defaults for simulation
+        sleep_hours = float(data.get('sleepHours')) # Required
+        exercise_freq = int(data.get('exerciseFreq')) # Required
+        age = int(data.get('age', 35)) # Default age if missing
+        gender = str(data.get('gender', 'Female')) # Default gender if missing
+        stress_level = int(data.get('stressLevel', 5)) # Default stress level if missing
 
-        confidence = float(np.max(pred_proba))
-        risk_score = int(confidence * 100) # Simple risk score based on confidence
+        # Basic validation (allow defaults to pass)
+        if not all(isinstance(x, (int, float)) for x in [sleep_hours, exercise_freq, age, stress_level]):
+             raise ValueError("Numeric inputs required.")
+        if gender not in ['Male', 'Female', 'Other']: # Allow 'Other' or map it
+             # If LabelEncoder only saw Male/Female, 'Other' might cause issues
+             # For now, let's default 'Other' to 'Female' encoding during prediction
+             logging.warning(f"Received gender '{gender}', mapping to 'Female' for prediction.")
+             gender = 'Female'
+             # Alternatively, handle 'Other' in encoding/training if possible
+
+    except (TypeError, ValueError, KeyError) as e:
+        # KeyErrors should be less likely now with .get defaults, but keep for safety
+        logging.error(f"Invalid input data: {e} - Data received: {data}")
+        abort(400, description=f"Invalid input data format or values: {e}")
+
+    try:
+        # Manually encode gender based on training
+        # IMPORTANT: This assumes the LabelEncoder used during training
+        # fit the data such that Female maps to 0 and Male maps to 1.
+        # If the training changes or includes other genders, this MUST be updated
+        # or the encoding step moved into the scikit-learn pipeline itself.
+        gender_encoded = 1 if gender == 'Male' else 0
+
+        # Create DataFrame for prediction with correct feature names IN ORDER
+        input_df = pd.DataFrame([[\
+            sleep_hours, exercise_freq, age, gender_encoded, stress_level\
+        ]], columns=MODEL_FEATURES) # Use the exact feature list
+
+        # Log differently for simulation vs user input
+        log_prefix = "Simulation Prediction" if is_simulation else "User Prediction"
+        # Use debug level for potentially sensitive or verbose data
+        logging.debug(f"{log_prefix} - Input DataFrame:\\\\n{input_df}")
+
+        # Use pipeline to predict (handles preprocessing + prediction)
+        pred_label = pipeline_global.predict(input_df)[0]
+        pred_proba = pipeline_global.predict_proba(input_df)[0]
+
+        # --- MODIFIED Risk Score Calculation ---
+        # Use probability of the highest risk class (label 2)
+        # Ensure the index 2 correctly corresponds to the 'High' risk label mapping
+        high_risk_proba = pred_proba[2] if len(pred_proba) > 2 else 0 
+        risk_score = int(high_risk_proba * 100) 
+        # Alternative: Map label to score: risk_map = {0: 25, 1: 50, 2: 75}; risk_score = risk_map.get(pred_label, 50)
+
         classification = classify_risk_label(pred_label)
+        # Confidence remains the max probability, indicating model's certainty in its chosen class
+        confidence = float(np.max(pred_proba))
 
-        logging.info(f"Prediction: Input=({sleep_hours}, {exercise_freq}), Class={classification}, Score={risk_score}")
+        logging.info(f"{log_prefix}: Input=(sleep={sleep_hours}, exercise={exercise_freq}, age={age}, gender={gender}, stress={stress_level}), Label={pred_label}, Class={classification}, Score={risk_score}, Confidence={confidence:.3f}")
         return jsonify({
-            'risk_score': risk_score,
+            'risk_score': risk_score, # Now based on high-risk probability
             'classification': classification,
             'confidence': round(confidence, 3)
         })
+    except IndexError:
+        logging.error(f"Error accessing predicted probabilities. Probabilities array: {pred_proba}. Check model output.", exc_info=True)
+        abort(500, description="Internal server error: Could not determine risk probability.")
     except Exception as e:
-        logging.error(f"Error during prediction: {e}")
+        logging.error(f"Error during prediction pipeline: {e}", exc_info=True)
         abort(500, description="Internal server error during prediction.")
 
-@app.route('/simulate', methods=['POST'])
-def simulate():
-    # This endpoint is similar to /predict but handles multiple scenarios
-    # For simplicity, it reuses much of the logic.
-    # A more robust implementation might optimize batch predictions.
-    if model_global is None:
-        logging.error("Model not available for simulation.")
-        abort(503, description="Model is not trained or loaded.")
 
-    if not request.is_json:
-        abort(400, description="Request must be JSON.")
+# --- Update /simulate similarly if needed ---
+# @app.route('/simulate', methods=['POST']) ... update to handle new features ...
 
-    data = request.get_json()
-    scenarios = data.get('scenarios')
-    if not isinstance(scenarios, list):
-        abort(400, description="'scenarios' must be a list of objects.")
-
-    results = []
-    for i, scenario in enumerate(scenarios):
-        try:
-            sleep_hours = float(scenario.get('sleepHours', 7.0))
-            exercise_freq = int(scenario.get('exerciseFreq', 3))
-
-            if not (4 <= sleep_hours <= 12 and 0 <= exercise_freq <= 7):
-                 logging.warning(f"Scenario {i}: Input values out of typical range: Sleep={sleep_hours}, Exercise={exercise_freq}")
-
-            features_input = np.array([[sleep_hours, exercise_freq]])
-            pred_label = model_global.predict(features_input)[0]
-            pred_proba = model_global.predict_proba(features_input)[0]
-            confidence = float(np.max(pred_proba))
-            risk_score = int(confidence * 100)
-            classification = classify_risk_label(pred_label)
-
-            results.append({
-                'sleepHours': sleep_hours,
-                'exerciseFreq': exercise_freq,
-                'risk_score': risk_score,
-                'classification': classification,
-                'confidence': round(confidence, 3)
-            })
-        except (TypeError, ValueError):
-            logging.warning(f"Scenario {i}: Invalid input types - skipping.")
-            continue # Skip this scenario
-        except Exception as e:
-            logging.error(f"Error processing scenario {i}: {e}")
-            # Optionally append an error object to results
-            continue
-
-    logging.info(f"Simulation complete. Processed {len(results)} out of {len(scenarios)} scenarios.")
-    return jsonify(results)
 
 @app.route('/summary', methods=['GET'])
 def summary():
-    if df_global is None or df_global.empty:
+    if df_summary_global is None or df_summary_global.empty:
         logging.warning("Summary requested, but data is not available.")
         abort(404, description="Data not available for summary.")
-
+    # (Keep existing summary logic, it uses df_summary_global implicitly)
+    # ... (rest of summary function) ...
     try:
-        # Calculate summary statistics, handling potential missing columns
         summary_stats = {}
-        if 'sleep_duration' in df_global.columns:
-            summary_stats["sleep_duration"] = {
-                "mean": round(df_global['sleep_duration'].mean(), 2),
-                "median": round(df_global['sleep_duration'].median(), 2),
-                "min": round(df_global['sleep_duration'].min(), 2),
-                "max": round(df_global['sleep_duration'].max(), 2)
+        # Example: Use original column names before rename if preferred for display
+        if 'sleep_duration' in df_summary_global.columns:
+            # Calculate stats on the processed column
+             summary_stats["Sleep Duration (hours)"] = { # User-friendly name
+                "mean": round(df_summary_global['sleep_duration'].mean(), 2),
+                "median": round(df_summary_global['sleep_duration'].median(), 2),
+                "min": round(df_summary_global['sleep_duration'].min(), 2),
+                "max": round(df_summary_global['sleep_duration'].max(), 2)
             }
-        if 'exercise_freq' in df_global.columns:
-             summary_stats["exercise_freq"] = {
-                "mean": round(df_global['exercise_freq'].mean(), 2),
-                "median": round(df_global['exercise_freq'].median(), 2),
-                "min": round(df_global['exercise_freq'].min(), 2),
-                "max": round(df_global['exercise_freq'].max(), 2)
-            }
-        if TARGET_VARIABLE in df_global.columns:
-            # Convert numeric labels back to strings for readability
-            risk_counts = df_global[TARGET_VARIABLE].map(classify_risk_label).value_counts().to_dict()
-            summary_stats["risk_distribution"] = risk_counts
+        # ... repeat for exercise_freq, Age, Stress Level etc. ...
+        if 'exercise_freq' in df_summary_global.columns:
+             summary_stats["Exercise Frequency (days/wk)"] = {
+                 "mean": round(df_summary_global['exercise_freq'].mean(), 2),
+                 "median": round(df_summary_global['exercise_freq'].median(), 2),
+                 "min": round(df_summary_global['exercise_freq'].min(), 2),
+                 "max": round(df_summary_global['exercise_freq'].max(), 2)
+             }
+        if TARGET_VARIABLE in df_summary_global.columns:
+            risk_counts = df_summary_global[TARGET_VARIABLE].map(classify_risk_label).value_counts().to_dict()
+            summary_stats["Predicted Risk Distribution"] = risk_counts # Clearer title
 
         logging.info("Generated data summary.")
         return jsonify(summary_stats)
     except Exception as e:
-        logging.error(f"Error generating summary: {e}")
+        logging.error(f"Error generating summary: {e}", exc_info=True)
         abort(500, description="Internal server error during summary generation.")
+
 
 @app.route('/correlation', methods=['GET'])
 def correlation():
-    if df_global is None or df_global.empty:
+    if df_summary_global is None or df_summary_global.empty:
         logging.warning("Correlation requested, but data is not available.")
         abort(404, description="Data not available for correlation analysis.")
-
+    # (Keep existing correlation logic, uses df_summary_global implicitly)
+    # ... (rest of correlation function) ...
     try:
-        # Select only numeric columns for correlation matrix
-        numeric_df = df_global.select_dtypes(include=np.number)
+        numeric_df = df_summary_global.select_dtypes(include=np.number)
         numeric_cols = numeric_df.columns.tolist()
         logging.info(f"Numeric columns identified for correlation: {numeric_cols}")
 
-        # Optional: Exclude less relevant numeric columns if needed
-        # Consider excluding encoded categoricals unless desired
-        cols_to_exclude = [col for col in numeric_cols if '_encoded' in col] # Exclude label encoded cols by default
-        # Add other IDs if necessary: e.g., cols_to_exclude.extend(['UserID', 'Person ID'])
-        
-        # Filter out explicitly excluded columns
+        # Exclude encoded categoricals and IDs
+        cols_to_exclude = [col for col in numeric_cols if '_encoded' in col or 'ID' in col or 'Id' in col]
         numeric_cols = [col for col in numeric_cols if col not in cols_to_exclude]
         logging.info(f"Numeric columns after exclusion: {numeric_cols}")
 
@@ -342,34 +330,25 @@ def correlation():
             logging.error("No suitable numeric columns found after exclusion for correlation analysis.")
             abort(400, description="No numeric columns found for correlation analysis.")
 
-        # Calculate correlation on the filtered numeric columns
-        correlation_matrix = df_global[numeric_cols].corr()
+        correlation_matrix = df_summary_global[numeric_cols].corr()
         logging.info(f"Calculated correlation matrix (shape: {correlation_matrix.shape})")
 
-        # Check for issues in the matrix (e.g., all NaN)
         if correlation_matrix.isnull().all().all():
              logging.warning("Correlation matrix contains all NaN values.")
-             # Decide how to handle: return empty, error, or the NaN matrix? Returning error for now.
              abort(500, description="Could not calculate valid correlations.")
 
-        # Convert matrix to JSON-friendly format (list of dictionaries)
-        # Fill NaN with null or a placeholder string for JSON compatibility
         correlation_data = correlation_matrix.fillna('N/A').reset_index().to_dict(orient='records')
         logging.info("Formatted correlation matrix for JSON response.")
 
-        # Also send column names for heatmap axes
-        response_data = {
-            'columns': numeric_cols, # Send the columns actually used
-            'correlation': correlation_data
-        }
-
+        response_data = {'columns': numeric_cols, 'correlation': correlation_data }
         logging.info("Generated correlation matrix successfully.")
         return jsonify(response_data)
     except Exception as e:
-        logging.error(f"Error generating correlation matrix: {e}", exc_info=True) # Log traceback
+        logging.error(f"Error generating correlation matrix: {e}", exc_info=True)
         abort(500, description="Internal server error during correlation analysis.")
 
-# --- Error Handlers ---
+
+# --- Error Handlers (keep existing) ---
 @app.errorhandler(400)
 def bad_request(error):
     return jsonify(error=str(error.description)), 400
@@ -386,7 +365,7 @@ def internal_server_error(error):
 def service_unavailable(error):
     return jsonify(error=str(error.description)), 503
 
-# --- Main Execution ---
+# --- Main Execution (keep existing) ---
 if __name__ == '__main__':
     # Use environment variable for port or default to 5000
     port = int(os.environ.get("PORT", 5000))
