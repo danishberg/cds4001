@@ -25,10 +25,10 @@ MODEL_FEATURES = ['sleep_duration', 'exercise_freq', 'Age', 'Gender_encoded', 'S
 TARGET_VARIABLE = 'risk_label'
 
 # Global variables to store model and related info
-df_summary_global = None  # For summary/correlation endpoints
-pipeline_global = None    # Trained model pipeline
-model_accuracy_global = None  # Model accuracy
-feature_names_global = None   # List of features used
+df_summary_global = None        # For summary/correlation endpoints
+pipeline_global = None          # Trained model pipeline
+model_accuracy_global = None    # Model accuracy
+feature_names_global = None     # List of features used
 
 # --- Helper Functions ---
 def generate_risk_label(sleep_duration):
@@ -189,8 +189,6 @@ def predict():
         abort(400, description="Request must be JSON.")
 
     data = request.get_json()
-    is_simulation = 'age' not in data  # Heuristic to distinguish simulation
-
     try:
         sleep_hours = float(data.get('sleepHours'))
         exercise_freq = int(data.get('exerciseFreq'))
@@ -198,7 +196,7 @@ def predict():
         gender = str(data.get('gender', 'Female'))
         stress_level = int(data.get('stressLevel', 5))
 
-        # Validate types (basic)
+        # Validate numeric types
         if not all(isinstance(x, (int, float)) for x in [sleep_hours, exercise_freq, age, stress_level]):
             raise ValueError("Numeric inputs required.")
         if gender not in ['Male', 'Female', 'Other']:
@@ -217,16 +215,28 @@ def predict():
 
         # Get probabilities and predicted label from the pipeline
         pred_proba = pipeline_global.predict_proba(input_df)[0]
-        pred_label = int(np.argmax(pred_proba))
+        # Get the classes the classifier was trained on
+        classifier_classes = pipeline_global.named_steps['classifier'].classes_
+        # Prepare a full probability array for all risk labels from 0 to 6
+        full_risk_labels = np.arange(7)  # [0, 1, 2, 3, 4, 5, 6]
+        pred_proba_full = np.zeros(7)
+        for i, risk in enumerate(full_risk_labels):
+            if risk in classifier_classes:
+                idx = np.where(classifier_classes == risk)[0][0]
+                pred_proba_full[i] = pred_proba[idx]
+            else:
+                pred_proba_full[i] = 0.0
 
-        # --- NEW: Compute Continuous Risk Score ---
-        # Compute the weighted average over class labels (0 to 6)
-        weighted_label = sum(prob * label for label, prob in enumerate(pred_proba))
-        # Normalize to percentage: if maximum label is 6, then:
-        risk_score_cont = (weighted_label / 6) * 100
+        # Compute weighted risk score over the full range [0,6]
+        weighted_label = np.dot(full_risk_labels, pred_proba_full)
+        # Instead of normalizing by fixed 6, use the highest risk available in the trained classifier
+        effective_max = classifier_classes.max()  # This gives the maximum label present
+        risk_score_cont = (weighted_label / effective_max) * 100
 
+        # Choose predicted label from the full probability vector
+        pred_label = int(np.argmax(pred_proba_full))
         classification = classify_risk_label(pred_label)
-        confidence = float(np.max(pred_proba))
+        confidence = float(np.max(pred_proba_full))
 
         logging.info(f"Prediction: Input=(sleep={sleep_hours}, exercise={exercise_freq}, age={age}, gender={gender}, stress={stress_level}), "
                      f"Weighted Label={weighted_label:.3f}, Risk Score={risk_score_cont:.1f}%, Predicted Label={pred_label}, Classification={classification}")
