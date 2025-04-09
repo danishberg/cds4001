@@ -136,10 +136,13 @@ const Dashboard: React.FC = () => {
                             <p><strong>Features Used:</strong> {modelInfo.features_used.map(formatFeatureName).join(', ')}</p>
                         </div>
                         <div className="model-limitations">
-                            <h4>Important Limitations:</h4>
+                            <h4>Important Limitations & Interpretation:</h4>
                             <ul>
                                 <li>This is a simplified statistical model, not a comprehensive health assessment.</li>
                                 <li>It predicts risk based *only* on the factors listed above. Many other factors influence health.</li>
+                                <li>The current model appears to have difficulty predicting scores significantly below 50, potentially due to limitations in the training data differentiating low-risk profiles. Focus on relative changes shown in simulations.</li>
+                                <li style={{fontWeight: 'bold', color: '#dc3545'}}>Model Limitation: Score Floor: Due to the characteristics of the training data, the model rarely predicts categories below "Moderate", resulting in a minimum displayed Risk Score of around 50, even for inputs indicating optimal health habits.</li>
+                                <li>Interpretation: Focus on the <strong>Risk Classification name</strong> (e.g., Moderate, High) and the <strong>relative changes</strong> shown in simulations, rather than the absolute numeric score.</li>
                                 <li><strong>This is NOT a medical diagnosis.</strong> Always consult a qualified healthcare professional for medical advice.</li>
                                 <li>The model identifies correlations in data, which does not necessarily imply causation.</li>
                             </ul>

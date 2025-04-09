@@ -15,12 +15,16 @@ interface RiskScoreProps {
     prediction: PredictionResult | null; // Accept prediction or null
 }
 
-// Define consistent color mapping (can be shared or duplicated)
+// UPDATED color mapping for 7 categories
 const classificationColors: { [key: string]: string } = {
-    Low: '#4CAF50',      // Green
-    Moderate: '#FFC107', // Amber
-    High: '#F44336',      // Red
-    Unknown: '#ccc'       // Grey
+    "Extremely Low": '#198754',// Bootstrap Success Darker
+    "Very Low": '#28a745',   // Bootstrap Success
+    "Low": '#8fbc8f',      // DarkSeaGreen 
+    "Moderate": '#FFC107', // Amber
+    "High": '#fd7e14',      // Bootstrap Orange
+    "Very High": '#dc3545',  // Bootstrap Danger
+    "Extreme": '#8b0000',    // DarkRed
+    "Unknown": '#6c757d'    // Grey
 };
 
 const RiskScore: React.FC<RiskScoreProps> = ({ prediction }) => {
@@ -43,7 +47,7 @@ const RiskScore: React.FC<RiskScoreProps> = ({ prediction }) => {
           <div 
             className="risk-gauge" 
             style={{ borderColor: scoreColor }}
-            title={`Risk Score: ${prediction.risk_score}`}
+            title={`Risk Score: ${prediction.risk_score} | Classification: ${prediction.classification}`}
           >
             <span className="risk-value" style={{ color: scoreColor }}>
               {prediction.risk_score}

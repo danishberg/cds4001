@@ -23,12 +23,16 @@ interface UserData {
     stressLevel: number | string;
 }
 
-// Define consistent color mapping based on classification
+// UPDATED color mapping for 7 categories
 const classificationColors: { [key: string]: string } = {
-    Low: '#4CAF50',      // Green
-    Moderate: '#FFC107', // Amber
-    High: '#F44336',      // Red
-    Unknown: '#ccc'       // Grey
+    "Extremely Low": '#198754',
+    "Very Low": '#28a745',
+    "Low": '#8fbc8f',
+    "Moderate": '#FFC107',
+    "High": '#fd7e14',
+    "Very High": '#dc3545',
+    "Extreme": '#8b0000',
+    "Unknown": '#6c757d'
 };
 
 const UserInputSurvey: React.FC<UserInputProps> = ({ onPredictionComplete }) => {
@@ -100,7 +104,7 @@ const UserInputSurvey: React.FC<UserInputProps> = ({ onPredictionComplete }) => 
     setLoading(false);
   };
   
-  // Use the shared color map
+  // Use updated color map
   const getScoreColor = (classification: string) => {
     return classificationColors[classification] || classificationColors.Unknown;
   };

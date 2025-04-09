@@ -30,12 +30,16 @@ interface SummaryReportProps {
     modelInfo: ModelInfo | null; // Accept modelInfo
 }
 
-// Define consistent color mapping based on classification
+// UPDATED color mapping for 7 categories
 const classificationColors: { [key: string]: string } = {
-    Low: '#4CAF50',      // Green
-    Moderate: '#FFC107', // Amber
-    High: '#F44336',      // Red
-    Unknown: '#ccc'       // Grey
+    "Extremely Low": '#198754',
+    "Very Low": '#28a745',
+    "Low": '#8fbc8f',
+    "Moderate": '#FFC107',
+    "High": '#fd7e14',
+    "Very High": '#dc3545',
+    "Extreme": '#8b0000',
+    "Unknown": '#6c757d'
 };
 
 // Enhanced helper function for report generation
@@ -49,17 +53,32 @@ const generateHealthInsights = (input: UserData | null, pred: PredictionResult |
     const stress = Number(input.stressLevel);
     const age = Number(input.age);
 
-    // --- General Comment based on Classification ---
+    // ... input conversions ...
+    const featuresUsedString = modelInfo?.features_used ? modelInfo.features_used.join(', ').replace('Gender_encoded', 'Gender').replace('sleep_duration', 'Sleep Duration').replace('exercise_freq', 'Exercise Frequency').trim() : 'the model inputs';
+
+    // --- UPDATED General Comment based on Classification (7 categories) ---
     switch (pred.classification) {
+        case 'Extremely Low':
+            insights.push(`✅✅ Overall: Your predicted health risk is Extremely Low. Based on the model and your inputs (${featuresUsedString}), your current lifestyle appears exceptionally supportive of good health.`);
+            break;
+        case 'Very Low':
+            insights.push(`✅ Overall: Your predicted health risk is Very Low. This suggests your current lifestyle habits related to ${featuresUsedString} are highly supportive of good health.`);
+            break;
         case 'Low':
-            insights.push(`✅ Overall: Your predicted health risk is Low. This suggests your current lifestyle habits (especially related to ${modelInfo?.features_used ? modelInfo.features_used.join(', ').replace('Gender_encoded', 'Gender').replace('sleep_duration', 'Sleep Duration').replace('exercise_freq', 'Exercise Frequency') : 'the model inputs'}) are generally supportive of good health according to the model. Keep it up!`);
+            insights.push(`✅ Overall: Your predicted health risk is Low. This suggests your habits related to ${featuresUsedString} are generally supportive of good health. Keep it up!`);
             break;
         case 'Moderate':
-            insights.push(`⚠️ Overall: Your predicted health risk is Moderate. The model suggests there may be opportunities for improvement in areas like sleep, exercise, or stress management to potentially lower risk.`);
+            insights.push(`⚠️ Overall: Your predicted health risk is Moderate. The model suggests potential opportunities for improvement in areas like sleep, exercise, or stress management.`);
             break;
         case 'High':
-            insights.push(`❗ Overall: Your predicted health risk is High. The model indicates that your current inputs (particularly sleep, exercise, and stress) might be contributing to a higher risk level. Consider focusing on improvements.`);
+            insights.push(`❗ Overall: Your predicted health risk is High. The model indicates that factors like sleep, exercise, and stress might be contributing to elevated risk. Consider focusing on improvements.`);
             break;
+        case 'Very High':
+            insights.push(`❗❗ Overall: Your predicted health risk is Very High. The model indicates that current factors (especially sleep, exercise, stress) pose a significant risk. Lifestyle changes are strongly recommended.`);
+            break;
+        case 'Extreme':
+             insights.push(`🚨 Overall: Your predicted health risk is Extreme. Based on the model, current factors indicate a critical risk level. Consulting a healthcare professional and making significant lifestyle changes is urgently advised.`);
+             break;
         default:
             insights.push("Overall risk assessment based on current inputs.");
     }

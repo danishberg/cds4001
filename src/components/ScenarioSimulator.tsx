@@ -32,12 +32,16 @@ interface ScenarioSimulatorProps {
   initialUserData: UserData | null; // Receive user's latest input
 }
 
-// Define consistent color mapping based on classification
+// UPDATED color mapping for 7 categories
 const classificationColors: { [key: string]: string } = {
-    Low: '#4CAF50',      // Green
-    Moderate: '#FFC107', // Amber
-    High: '#F44336',      // Red
-    Unknown: '#ccc'       // Grey
+    "Extremely Low": '#198754',
+    "Very Low": '#28a745',
+    "Low": '#8fbc8f',
+    "Moderate": '#FFC107',
+    "High": '#fd7e14',
+    "Very High": '#dc3545',
+    "Extreme": '#8b0000',
+    "Unknown": '#6c757d'
 };
 
 const ScenarioSimulator: React.FC<ScenarioSimulatorProps> = ({ onNewResult, initialUserData }) => {
@@ -176,7 +180,9 @@ const ScenarioSimulator: React.FC<ScenarioSimulatorProps> = ({ onNewResult, init
         <p className="component-description">
             Select a factor (Sleep, Exercise, or Stress) and a range to simulate how changes 
             in that one area might impact your predicted risk score, based on your current survey data. 
-            Results will update the Trend Analysis chart. {!initialUserData && <strong style={{color: 'red'}}>(Requires survey submission first!)</strong>}
+            Focus on the <strong>direction and magnitude of change</strong> in the Trend Analysis chart, 
+            as the absolute score may have limitations (see Model Info). 
+            {!initialUserData && <strong style={{color: 'red'}}>(Requires survey submission first!)</strong>}
        </p>
        
        {/* Preset Trend Buttons */} 
